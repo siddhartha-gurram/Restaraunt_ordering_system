@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>Tablet — Orders (Left) & Menu (Right)</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    .topbar { display:flex; gap:8px; align-items:center; margin: 8px 0 16px; }
+    .btn { padding:8px 12px; border:0; border-radius:6px; cursor:pointer; background:#2c4cff; color:#fff; }
+    .btn.secondary { background:#666; }
+    .btn.danger { background:#c33; }
+    .badge { padding:2px 8px; background:#eee; border-radius:999px; font-size:12px; }
+    .box { border: 1px solid #ddd; padding: 12px; border-radius: 8px; }
+    .row { display:flex; align-items:center; gap:8px; margin:6px 0; flex-wrap: wrap; }
+    .qty { width: 64px; }
+    .order { border: 1px solid #eee; padding: 8px; border-radius: 8px; margin: 8px 0; }
+    .order .actions { display:flex; gap:6px; flex-wrap:wrap; }
+    .cols {
+      display: grid; gap: 16px;
+      grid-template-columns: 1.1fr 1fr;  /* LEFT a bit wider for orders */
+      align-items: start;
+      min-height: calc(100vh - 160px);
+    }
+    @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+    .scroll { max-height: calc(100vh - 230px); overflow: auto; }
+    .pill { padding:2px 8px; border-radius:999px; font-size:12px; background:#f0f0f0; }
+
+    /* Category tabs */
+    .tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+    .tab { padding:6px 10px; border-radius:999px; background:#eee; cursor:pointer; }
+    .tab.active { background:#2c4cff; color:#fff; }
+
+    /* Menu grid tiles */
+    .menu-grid {
+      display:grid; gap:10px;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    }
+    .tile {
+      border:1px solid #ddd; border-radius:12px; padding:14px; cursor:pointer;
+      display:flex; align-items:center; justify-content:center; text-align:center; min-height:80px;
+      background:#fafafa;
+    }
+    .tile:hover { outline:3px solid #2c4cff22; }
+
+    /* Simple modal builder */
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      display:none; align-items:center; justify-content:center; z-index: 10;
+    }
+    .modal {
+      background:#fff; color:#111; width: min(740px, 92vw);
+      border-radius:12px; padding:16px; max-height: 85vh; overflow:auto;
+    }
+    .group { margin:10px 0; }
+    .grid { display:grid; gap:8px; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+    .chip { border:1px solid #999; border-radius:999px; padding:6px 10px; cursor:pointer; text-align:center; }
+    .chip.selected { background:#2c4cff; border-color:#2c4cff; color:#fff; }
+    .help { font-size:12px; opacity:0.85; }
+    .label { font-weight:600; margin-bottom:4px; }
+  </style>
+</head>
+<body>
+  <h1>Tablet — Kitchen Controller</h1>
+
+  <!-- TOP NAV TOGGLE: Menu view <-> embedded TV view -->
+  <div class="topbar">
+    <button id="goMenu" class="btn" title="Menu">🧾 Menu</button>
+    <button id="goTV" class="btn secondary" title="Kitchen TV">📺 Kitchen TV</button>
+    <span class="badge">Tap to switch views. Best in landscape.</span>
+  </div>
+
+  <!-- ===== MENU VIEW: split screen ===== -->
+  <div id="view-menu">
+    <div class="cols">
+      <!-- LEFT: ORDERS LIST -->
+      <div class="box">
+        <h2>All Orders</h2>
+        <div id="orders" class="scroll"></div>
+      </div>
+
+      <!-- RIGHT: MENU + CART -->
+      <div class="box">
+        <h2>Menu</h2>
+
+        <!-- Category Tabs -->
+        <div id="tabs" class="tabs"></div>
+
+        <!-- Menu Grid -->
+        <div id="menuList" class="menu-grid" style="max-height:40vh; overflow:auto;"></div>
+
+        <hr />
+        <h3>Cart</h3>
+        <div class="row">
+          <label>Table / Name:</label>
+          <input id="tableName" placeholder="e.g., T3 or John"/>
+        </div>
+        <div class="row">
+          <label>Notes:</label>
+          <input id="notes" placeholder="e.g., no onions"/>
+        </div>
+        <div id="cart"></div>
+        <div class="row" style="margin-top:6px">
+          <button id="sendBtn" class="btn">Send to Kitchen</button>
+          <button id="clearBtn" class="btn secondary">Clear</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== TV VIEW: embedded TV page ===== -->
+  <div id="view-tv" style="display:none">
+    <div class="box">
+      <h2>Kitchen TV (embedded)</h2>
+      <div class="badge">Read-only here — use TV remote on the actual TV, or buttons in the Orders list.</div>
+      <iframe src="/tv.html" style="width:100%;height:70vh;border:1px solid #ddd;border-radius:8px;"></iframe>
+    </div>
+  </div>
+
+  <!-- ===== Builder Modal ===== -->
+  <div id="builderBackdrop" class="modal-backdrop">
+    <div class="modal">
+      <h2 id="builderTitle"></h2>
+      <div id="builderBody"></div>
+      <div class="row" style="justify-content:flex-end;margin-top:10px">
+        <button id="builderCancel" class="btn secondary">Cancel</button>
+        <button id="builderAdd" class="btn">Add to Cart</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* =========================
+       SOCKET + STATE
+    ========================= */
+    const socket = io();
+
+    let CART = []; // array of {id, name, qty, meta:{}}
+    let ORDERS = [];
+
+    // Elements
+    const ordersEl     = document.getElementById('orders');
+    const tabsEl       = document.getElementById('tabs');
+    const menuListEl   = document.getElementById('menuList');
+    const cartEl       = document.getElementById('cart');
+    const tableNameEl  = document.getElementById('tableName');
+    const notesEl      = document.getElementById('notes');
+
+    // Builder modal elements
+    const builderBackdrop = document.getElementById('builderBackdrop');
+    const builderTitle    = document.getElementById('builderTitle');
+    const builderBody     = document.getElementById('builderBody');
+    const builderCancel   = document.getElementById('builderCancel');
+    const builderAdd      = document.getElementById('builderAdd');
+
+    /* =========================
+       DATA MODEL (menu + rules)
+    ========================= */
+
+    const HOT_VEGGIES = ["Chef's Rice", "Garlic potatoes", "Zucchini & mushroom", "Roasted Cauliflower", "Pomogranate EggPlant", "garlic Broccoli", "Green Beans"];
+    const SALADS      = ["Greek Salad", "Moroccan Cucumber Salad", "Cabbage & spinach salad", "Tabouli salad", "mixed bean salad", "Couscous salad", "Fattoush salad", "pasta salad"];
+    const DIPS        = ["hummus", "spicy hummus", "baba ghanoush", "tzatziki sauce", "garlic sauce"];
+
+    const FRESH_GRILL_MEATS = ["Chicken Shawarma", "Chicken kabob", "Falafel side", "Gryo Plate", "Steak Kabob Plate", "Beef Kafta Kabob"];
+    const MEAT_OF_DAY       = ["Marys chicken", "rosemary chicken", "fish fillet", "lamb shank"];
+
+    const SIZES = ["8oz", "16oz", "32oz"];
+
+    // Toppings (you can tweak these lists anytime)
+    const WRAP_TOPPINGS = [
+      "Lettuce","Tomato","Onion","Pickles","Pickled Turnips","Cucumber","Jalapeños",
+      "Garlic sauce","Tahini","Tzatziki","Hot sauce"
+    ];
+    const BURGER_TOPPINGS = [
+      "Lettuce","Tomato","Onion","Pickles","Cheese","Jalapeños",
+      "Ketchup","Mustard","Mayo"
+    ];
+
+    // Categories & items (UPDATED platter rules + toppings types)
+    const CATEGORIES = [
+      {
+        id: "platters",
+        name: "Platters",
+        items: [
+          { id:"pl_1s1m", name:"1 side, 1 meat", type:"platter", sidesMax:1, meatRequired:true },
+          { id:"pl_2s1m", name:"2 sides, 1 meat", type:"platter", sidesMax:2, meatRequired:true },
+          { id:"pl_3s1m", name:"3 sides, 1 meat", type:"platter", sidesMax:3, meatRequired:true },
+          { id:"pl_sampler", name:"Marys Sampler", type:"platter", sidesMax:4, meatRequired:true }, /* changed to 4 sides */
+          { id:"pl_falafel", name:"Falafel Platter", type:"platter", sidesMax:2, meatRequired:true, meatFixed:"Falafel side" }, /* 2 sides, fixed meat */
+          {
+  id:"pl_saladbowl",
+  name:"Salad Bowl",  
+  type:"platter",
+  sidesMax: 2,                         // two salads
+  meatRequired: false,                 // no required meat
+  meatAllowed: false,                  // <-- hide meat section entirely
+  sidesFromOverride: { salads: SALADS },
+  addonSingle: ["Gyro meat","Chicken Shawarma meat"]  // optional add-on (pick one)
+}
+
+
+        ],
+        config: { sidesFrom: { hot: HOT_VEGGIES, salads: SALADS, dips: DIPS }, meatsFrom: { grill: FRESH_GRILL_MEATS, daily: MEAT_OF_DAY } }
+      },
+      {
+        id: "pita",
+        name: "Pita Sandwiches/Wraps",
+        items: [
+          "Chicken Shawarma Wrap","Chicken Kabob Wrap","Gyro Wrap","Beef kafta Wrap","Steak kabob Wrap","Falafel Sandwich"
+        ].map((n,i)=>({ id:"pw_"+i, name:n, type:"topped", toppings: WRAP_TOPPINGS }))
+      },
+      {
+        id: "fresh",
+        name: "Fresh off the Grill",
+        items: FRESH_GRILL_MEATS.map((n,i)=>({ id:"fg_"+i, name:n, type:"simple" }))
+      },
+      {
+        id: "daily",
+        name: "Meat of the day",
+        items: MEAT_OF_DAY.map((n,i)=>({ id:"md_"+i, name:n, type:"simple" }))
+      },
+      {
+        id: "kids",
+        name: "Kids Meal",
+        items: ["chicken tenders & fries","chicken nuggets & fries"].map((n,i)=>({ id:"km_"+i, name:n, type:"simple" }))
+      },
+      {
+        id: "hotveggies",
+        name: "Hot Veggies",
+        items: HOT_VEGGIES.map((n,i)=>({ id:"hv_"+i, name:n, type:"sized", sizes:SIZES }))
+      },
+      {
+        id: "salads",
+        name: "Salads",
+        items: SALADS.map((n,i)=>({ id:"sl_"+i, name:n, type:"sized", sizes:SIZES }))
+      },
+      {
+        id: "dips",
+        name: "Dips",
+        items: DIPS.map((n,i)=>({ id:"dp_"+i, name:n, type:"sized", sizes:SIZES }))
+      },
+      {
+        id: "burgers",
+        name: "Burgers",
+        items: ["halal beef burger","halal chicken burger"].map((n,i)=>({ id:"bg_"+i, name:n, type:"topped", toppings: BURGER_TOPPINGS }))
+      },
+      {
+        id: "extras",
+        name: "Extras",
+        items: [
+          { id:"ex_pita", name:"pita bread", type:"simple" },
+          { id:"ex_soup", name:"lentil soup", type:"sized", sizes:SIZES },
+          { id:"ex_dolmas", name:"grape leaves dolmas", type:"simple" },
+          { id:"ex_fries", name:"french fries", type:"simple" }
+        ]
+      },
+      {
+        id: "family",
+        name: "Family Meals",
+        items: [
+          "Chicken Shawarma family meal","Chicken kabob family meal","gyro family meal","kabob family meal","falafel family meal"
+        ].map((n,i)=>({ id:"fm_"+i, name:n, type:"family", sidesPick:3 }))
+      }
+    ];
+
+    /* =========================
+       RENDER: Tabs + Menu (tiles)
+    ========================= */
+    let activeCatId = CATEGORIES[0].id;
+
+    function renderTabs() {
+      tabsEl.innerHTML = '';
+      CATEGORIES.forEach(cat => {
+        const t = document.createElement('div');
+        t.className = 'tab' + (cat.id === activeCatId ? ' active' : '');
+        t.textContent = cat.name;
+        t.addEventListener('click', () => {
+          activeCatId = cat.id;
+          renderTabs();
+          renderMenuList();
+        });
+        tabsEl.appendChild(t);
+      });
+    }
+
+    function renderMenuList() {
+      const cat = CATEGORIES.find(c => c.id === activeCatId);
+      menuListEl.innerHTML = '';
+      cat.items.forEach(item => {
+        const tile = document.createElement('div');
+        tile.className = 'tile';
+        tile.textContent = item.name;
+        tile.addEventListener('click', () => handleAddItem(cat, item));
+        menuListEl.appendChild(tile);
+      });
+    }
+
+    /* =========================
+       ITEM BUILDERS (modals)
+       (all include QTY + NOTES now)
+    ========================= */
+    let pendingAdd = null;
+
+    function openBuilder(title, bodyBuilder, onAdd) {
+      builderTitle.textContent = title;
+      builderBody.innerHTML = '';
+      bodyBuilder(builderBody);
+      pendingAdd = onAdd;
+      builderBackdrop.style.display = 'flex';
+    }
+    function closeBuilder() {
+      builderBackdrop.style.display = 'none';
+      pendingAdd = null;
+    }
+    builderCancel.addEventListener('click', closeBuilder);
+    builderBackdrop.addEventListener('click', (e) => {
+      if (e.target === builderBackdrop) closeBuilder();
+    });
+    builderAdd.addEventListener('click', () => {
+      if (pendingAdd) { pendingAdd(); closeBuilder(); }
+    });
+
+    function addQtyNotesSection(container) {
+      const wrap = document.createElement('div');
+      wrap.className = 'group';
+      wrap.innerHTML = `
+        <div class="row">
+          <div class="label">Quantity</div>
+          <input id="q" class="qty" type="number" min="1" value="1"/>
+        </div>
+        <div class="row" style="width:100%">
+          <div class="label">Notes (optional)</div>
+          <input id="itemNotes" style="flex:1" placeholder="extra sauce, no onions, etc."/>
+        </div>
+      `;
+      container.appendChild(wrap);
+    }
+
+    function handleAddItem(cat, item) {
+      if (item.type === 'simple') {
+        // qty + notes
+        openBuilder(item.name, (wrap)=>{
+          addQtyNotesSection(wrap);
+        }, ()=>{
+          const q = Math.max(1, parseInt(document.getElementById('q').value || '1', 10));
+          const notes = (document.getElementById('itemNotes').value || '').trim();
+          pushCartLine(formatNameWithNotes(item.name, notes), q, { category: cat.name, notes });
+        });
+      }
+      else if (item.type === 'sized') {
+        openBuilder(item.name, (wrap)=>{
+          const sizes = item.sizes || SIZES;
+          const sec = document.createElement('div');
+          sec.className = 'group';
+          sec.innerHTML = `<div class="label">Choose a size</div><div class="grid" id="sizeRow"></div>`;
+          wrap.appendChild(sec);
+          const row = sec.querySelector('#sizeRow');
+          sizes.forEach(s => {
+            const c = document.createElement('div');
+            c.className = 'chip';
+            c.textContent = s;
+            c.addEventListener('click', () => {
+              row.querySelectorAll('.chip').forEach(x=>x.classList.remove('selected'));
+              c.classList.add('selected');
+            });
+            row.appendChild(c);
+          });
+          addQtyNotesSection(wrap);
+        }, ()=>{
+          const q = Math.max(1, parseInt(document.getElementById('q').value || '1', 10));
+          const notes = (document.getElementById('itemNotes').value || '').trim();
+          const sel = builderBody.querySelector('.chip.selected');
+          if (!sel) { alert('Choose a size'); return; }
+          const size = sel.textContent;
+          pushCartLine(formatNameWithNotes(`${item.name} (${size})`, notes), q, { category: cat.name, size, notes });
+        });
+      }
+      else if (item.type === 'topped') {
+        // sandwiches / burgers: toppings multi-select + qty + notes
+        openBuilder(item.name, (wrap)=>{
+          const sec = document.createElement('div');
+          sec.className = 'group';
+          sec.innerHTML = `<div class="label">Toppings (choose any)</div><div class="grid" id="tops"></div>`;
+          wrap.appendChild(sec);
+          const grid = sec.querySelector('#tops');
+          (item.toppings || []).forEach(name=>{
+            const chip = document.createElement('div');
+            chip.className = 'chip';
+            chip.textContent = name;
+            chip.addEventListener('click', ()=> chip.classList.toggle('selected'));
+            grid.appendChild(chip);
+          });
+          addQtyNotesSection(wrap);
+        }, ()=>{
+          const q = Math.max(1, parseInt(document.getElementById('q').value || '1', 10));
+          const notes = (document.getElementById('itemNotes').value || '').trim();
+          const selected = Array.from(builderBody.querySelectorAll('#tops .chip.selected')).map(x=>x.textContent);
+          const meta = { category: cat.name, toppings: selected, notes };
+          const desc = `${item.name}${selected.length ? ' | Toppings: ' + selected.join(', ') : ''}`;
+          pushCartLine(formatNameWithNotes(desc, notes), q, meta);
+        });
+      }
+      else if (item.type === 'platter') {
+  const sidesMax = item.sidesMax ?? 0;
+  const meatRequired = !!item.meatRequired;
+  const meatFixed = item.meatFixed || null;
+
+  // per-item overrides (Salad Bowl uses only salads)
+  const plattersConfig = CATEGORIES.find(c=>c.id==='platters').config || {};
+  const sidesMap = item.sidesFromOverride || plattersConfig.sidesFrom || {};
+  const meatsMap = plattersConfig.meatsFrom || {};
+
+  const pickSides = { hot:[], salads:[], dips:[] };
+  let pickedMeat = meatFixed ? meatFixed : null;
+  let pickedAddon = null;
+
+  openBuilder(item.name, (wrap)=>{
+    // SIDES
+    const totalHelp = document.createElement('div');
+    totalHelp.className = 'help';
+    totalHelp.textContent = `Pick up to ${sidesMax} sides`;
+    wrap.appendChild(totalHelp);
+
+    const makeSection = (label, arr, key) => {
+      const sec = document.createElement('div');
+      sec.className = 'group';
+      sec.innerHTML = `<div class="label">${label}</div><div class="grid"></div>`;
+      const grid = sec.querySelector('.grid');
+      arr.forEach(name=>{
+        const chip = document.createElement('div');
+        chip.className = 'chip';
+        chip.textContent = name;
+        chip.addEventListener('click', ()=>{
+          const isSel = chip.classList.toggle('selected');
+          if (isSel) {
+            if (countAllSides() >= sidesMax) {
+              chip.classList.remove('selected');
+              alert(`You can pick up to ${sidesMax} sides`);
+              return;
+            }
+            pickSides[key].push(name);
+          } else {
+            pickSides[key] = pickSides[key].filter(x=>x!==name);
+          }
+        });
+        grid.appendChild(chip);
+      });
+      wrap.appendChild(sec);
+    };
+
+    function countAllSides() {
+      return (pickSides.hot?.length||0) + (pickSides.salads?.length||0) + (pickSides.dips?.length||0);
+    }
+
+    if (sidesMap.hot?.length)    makeSection('Hot Veggies', sidesMap.hot, 'hot');
+    if (sidesMap.salads?.length) makeSection('Salads',     sidesMap.salads, 'salads');
+    if (sidesMap.dips?.length)   makeSection('Dips',       sidesMap.dips, 'dips');
+
+    // MEAT (hidden when meatAllowed === false)
+    if (!meatFixed && item.meatAllowed !== false) {
+      const meatSec = document.createElement('div');
+      meatSec.className = 'group';
+      meatSec.innerHTML = `<div class="label">Meat ${meatRequired ? '(pick 1)' : '(optional)'}</div><div class="grid" id="meatGrid"></div>`;
+      wrap.appendChild(meatSec);
+      const meatGrid = meatSec.querySelector('#meatGrid');
+      const meats = (meatsMap.grill||[]).concat(meatsMap.daily||[]);
+      meats.forEach(name=>{
+        const chip = document.createElement('div');
+        chip.className = 'chip';
+        chip.textContent = name;
+        chip.addEventListener('click', ()=>{
+          meatGrid.querySelectorAll('.chip').forEach(x=>x.classList.remove('selected'));
+          chip.classList.add('selected');
+          pickedMeat = name;
+        });
+        meatGrid.appendChild(chip);
+      });
+    } else if (meatFixed) {
+      const mf = document.createElement('div');
+      mf.className = 'group';
+      mf.innerHTML = `<div class="label">Meat</div><div class="help">Fixed: ${meatFixed}</div>`;
+      wrap.appendChild(mf);
+    }
+
+    // OPTIONAL ADD-ON (single choice)
+    if (Array.isArray(item.addonSingle) && item.addonSingle.length) {
+      const addSec = document.createElement('div');
+      addSec.className = 'group';
+      addSec.innerHTML = `
+        <div class="label">Add-on (choose one)</div>
+        <div class="grid" id="addonGrid"></div>
+        <div class="help">Optional</div>
+      `;
+      wrap.appendChild(addSec);
+
+      const addonGrid = addSec.querySelector('#addonGrid');
+      item.addonSingle.forEach(name=>{
+        const chip = document.createElement('div');
+        chip.className = 'chip';
+        chip.textContent = name;
+        chip.addEventListener('click', ()=>{
+          addonGrid.querySelectorAll('.chip').forEach(x=>x.classList.remove('selected'));
+          chip.classList.add('selected');
+          pickedAddon = name;
+        });
+        addonGrid.appendChild(chip);
+      });
+    }
+
+    // Qty + Notes
+    const qWrap = document.createElement('div');
+    qWrap.className = 'group';
+    qWrap.innerHTML = `
+      <div class="row">
+        <div class="label">Quantity</div>
+        <input id="q" class="qty" type="number" min="1" value="1"/>
+      </div>
+      <div class="row" style="width:100%">
+        <div class="label">Notes (optional)</div>
+        <input id="itemNotes" style="flex:1" placeholder="extra sauce, no onions, etc."/>
+      </div>
+    `;
+    wrap.appendChild(qWrap);
+  }, ()=>{
+    const q = Math.max(1, parseInt(document.getElementById('q').value || '1', 10));
+    const notes = (document.getElementById('itemNotes').value || '').trim();
+    const sidesChosen = []
+      .concat(pickSides.hot || [])
+      .concat(pickSides.salads || [])
+      .concat(pickSides.dips || []);
+    if (sidesChosen.length > (item.sidesMax ?? 0)) {
+      alert(`Pick up to ${item.sidesMax} sides`);
+      return;
+    }
+    if (item.meatAllowed !== false && (item.meatRequired ?? false) && !pickedMeat) {
+      alert('Please pick a meat');
+      return;
+    }
+
+    const meta = {
+      category: cat.name,
+      sides: sidesChosen,
+      meat: (item.meatAllowed === false ? null : (pickedMeat || null)),
+      addon: pickedAddon || null,
+      notes
+    };
+    const desc =
+      `${item.name}` +
+      `${meta.meat ? ' + ' + meta.meat : ''}` +
+      `${meta.sides?.length ? ' | Sides: ' + meta.sides.join(', ') : ''}` +
+      `${meta.addon ? ' | Add-on: ' + meta.addon : ''}`;
+
+    pushCartLine(formatNameWithNotes(desc, notes), q, meta);
+  });
+}
+    }
+
+    /* =========================
+       CART RENDER / UPDATE
+    ========================= */
+    function formatNameWithNotes(base, notes) {
+      return notes ? `${base} | Notes: ${notes}` : base;
+    }
+
+    function pushCartLine(name, qty, meta) {
+      // combine same line if meta+name are identical
+      const key = JSON.stringify({ name, meta });
+      const found = CART.find(x => x._key === key);
+      if (found) found.qty += qty;
+      else CART.push({ id: cryptoRandomId(), name, qty, meta, _key:key });
+      renderCart();
+    }
+
+    function cryptoRandomId() {
+      return 'x' + Math.random().toString(36).slice(2,10);
+    }
+
+    function renderCart() {
+      if (!CART.length) {
+        cartEl.innerHTML = '<div class="badge">Cart is empty</div>';
+        return;
+      }
+      cartEl.innerHTML = CART.map(line => `
+        <div class="row" data-id="${line.id}">
+          <div style="min-width:260px">${line.name}</div>
+          <div class="badge">x${line.qty}</div>
+          <button class="btn secondary minus">-</button>
+          <button class="btn secondary plus">+</button>
+          <button class="btn danger remove">Remove</button>
+        </div>
+      `).join('');
+
+      cartEl.querySelectorAll('.minus').forEach(b=>{
+        b.addEventListener('click', ()=>{
+          const id = b.parentElement.getAttribute('data-id');
+          const i = CART.findIndex(x=>x.id===id);
+          if (i>=0) { CART[i].qty = Math.max(0, CART[i].qty - 1); if (CART[i].qty===0) CART.splice(i,1); }
+          renderCart();
+        });
+      });
+      cartEl.querySelectorAll('.plus').forEach(b=>{
+        b.addEventListener('click', ()=>{
+          const id = b.parentElement.getAttribute('data-id');
+          const i = CART.findIndex(x=>x.id===id);
+          if (i>=0) { CART[i].qty += 1; }
+          renderCart();
+        });
+      });
+      cartEl.querySelectorAll('.remove').forEach(b=>{
+        b.addEventListener('click', ()=>{
+          const id = b.parentElement.getAttribute('data-id');
+          CART = CART.filter(x=>x.id!==id);
+          renderCart();
+        });
+      });
+    }
+
+    /* =========================
+       ORDERS (LEFT SIDE)
+    ========================= */
+    function renderOrders() {
+      if (!ORDERS.length) {
+        ordersEl.innerHTML = '<div class="badge">No orders yet</div>';
+        return;
+      }
+      ordersEl.innerHTML = '';
+      ORDERS.forEach(order => {
+        const div = document.createElement('div');
+        div.className = 'order';
+        div.innerHTML = `
+          <div class="row" style="justify-content:space-between;">
+            <div>
+              <strong>#${order.number}</strong>
+              <span class="pill">${order.status}</span>
+              <span class="pill">${order.tableName}</span>
+            </div>
+            <div class="actions">
+              <button class="btn secondary prep">Preparing</button>
+              <button class="btn secondary done">Complete</button>
+              <button class="btn danger remove">Remove</button>
+            </div>
+          </div>
+          ${order.notes ? `<div class="help">Notes: ${order.notes}</div>` : ''}
+          <div style="margin-top:6px">${order.items.map(it => `${it.name} x${it.qty}`).join(', ')}</div>
+        `;
+        div.querySelector('.prep').addEventListener('click', ()=> socket.emit('setPreparing', order.id));
+        div.querySelector('.done').addEventListener('click', ()=> socket.emit('completeOrder', order.id));
+        div.querySelector('.remove').addEventListener('click', ()=> { if (confirm('Remove this order?')) socket.emit('removeOrder', order.id); });
+        ordersEl.appendChild(div);
+      });
+    }
+
+    socket.on('orders', (list) => {
+      ORDERS = Array.isArray(list) ? list : [];
+      renderOrders();
+    });
+
+    /* =========================
+       SEND / CLEAR
+    ========================= */
+    document.getElementById('sendBtn').addEventListener('click', () => {
+      if (!CART.length) { alert('Cart is empty'); return; }
+      const tableName = (tableNameEl.value || 'ToGo').trim();
+      const notes = (notesEl.value || '').trim();
+      const items = CART.map(line => ({ id: line.id, name: line.name, qty: line.qty, meta: line.meta }));
+      socket.emit('createOrder', { items, tableName, notes });
+      CART = [];
+      tableNameEl.value = '';
+      notesEl.value = '';
+      renderCart();
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      CART = [];
+      renderCart();
+    });
+
+    /* =========================
+       TOP TOGGLE (Menu <-> TV)
+    ========================= */
+    const viewMenu = document.getElementById('view-menu');
+    const viewTV   = document.getElementById('view-tv');
+    const btnMenu  = document.getElementById('goMenu');
+    const btnTV    = document.getElementById('goTV');
+
+    function setActive(target) {
+      const isMenu = (target === 'menu');
+      viewMenu.style.display = isMenu ? '' : 'none';
+      viewTV.style.display   = isMenu ? 'none' : '';
+      btnMenu.classList.toggle('secondary', !isMenu);
+      btnTV.classList.toggle('secondary', isMenu);
+      localStorage.setItem('tabletView', target);
+    }
+    btnMenu.addEventListener('click', () => setActive('menu'));
+    btnTV.addEventListener('click',   () => setActive('tv'));
+    setActive(localStorage.getItem('tabletView') || 'menu');
+
+    /* =========================
+       BOOT
+    ========================= */
+    renderTabs();
+    renderMenuList();
+    renderCart();
+  </script>
+</body>
+</html>

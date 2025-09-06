@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Kitchen TV — Orders</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .box { border: 1px solid #ddd; padding: 12px; border-radius: 8px; }
+    .order { border: 1px solid #eee; padding: 8px; border-radius: 8px; margin: 8px 0; }
+    .selected { outline: 3px solid #2c4cff; }
+    .badge { padding: 2px 8px; background: #eee; border-radius: 999px; font-size: 12px; }
+    .small { font-size: 12px; color: #555; }
+    .completed { opacity: 0.6; }
+  </style>
+</head>
+<body>
+  <h1>Kitchen TV — Orders</h1>
+  <div class="small">Remote: ↑ ↓ to move | OK ×2 = Complete | OK ×3 = Remove</div>
+
+  <div class="cols">
+    <div class="box">
+      <h2>Pending</h2>
+      <div id="pending"></div>
+    </div>
+    <div class="box">
+      <h2>Completed</h2>
+      <div id="completed"></div>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+
+    let ORDERS = [];
+    let selectedIndex = 0; // index within pending list
+
+    // OK press detection (double/triple)
+    let okCount = 0;
+    let okTimer = null;
+    const OK_WINDOW_MS = 400; // time window to catch double/triple press
+
+    const pendingEl = document.getElementById('pending');
+    const completedEl = document.getElementById('completed');
+
+    function splitOrders() {
+      const pending = ORDERS.filter(o => o.status !== 'completed');
+      const completed = ORDERS.filter(o => o.status === 'completed');
+      return { pending, completed };
+    }
+
+    function render() {
+      const { pending, completed } = splitOrders();
+      if (selectedIndex >= pending.length) selectedIndex = Math.max(0, pending.length - 1);
+
+      // render pending
+      pendingEl.innerHTML = '';
+      pending.forEach((o, idx) => {
+        const div = document.createElement('div');
+        div.className = 'order ' + (idx === selectedIndex ? 'selected' : '');
+        div.innerHTML = `
+          <div><strong>#${o.number}</strong> — <span class="badge">${o.tableName}</span> — <span class="badge">${o.status}</span></div>
+          <div class="small">${new Date(o.createdAt).toLocaleTimeString()}</div>
+          <div style="margin-top:6px">${o.items.map(it => `${it.name} x${it.qty}`).join(', ')}</div>
+          ${o.notes ? `<div style="margin-top:6px"><em>Notes:</em> ${o.notes}</div>` : ''}
+        `;
+        pendingEl.appendChild(div);
+      });
+
+      // render completed
+      completedEl.innerHTML = '';
+      completed.forEach(o => {
+        const div = document.createElement('div');
+        div.className = 'order completed';
+        div.innerHTML = `
+          <div><strong>#${o.number}</strong> — <span class="badge">${o.tableName}</span> — <span class="badge">${o.status}</span></div>
+          <div class="small">${new Date(o.createdAt).toLocaleTimeString()}</div>
+          <div style="margin-top:6px">${o.items.map(it => `${it.name} x${it.qty}`).join(', ')}</div>
+          ${o.notes ? `<div style="margin-top:6px"><em>Notes:</em> ${o.notes}</div>` : ''}
+        `;
+        completedEl.appendChild(div);
+      });
+    }
+
+    // handle remote keys
+    function onKeyDown(e) {
+      const { pending } = splitOrders();
+      if (e.key === 'ArrowDown') {
+        selectedIndex = Math.min(selectedIndex + 1, Math.max(0, pending.length - 1));
+        render();
+      } else if (e.key === 'ArrowUp') {
+        selectedIndex = Math.max(selectedIndex - 1, 0);
+        render();
+      } else if (e.key === 'Enter') {
+        // OK pressed — count within time window
+        okCount++;
+        if (okTimer) clearTimeout(okTimer);
+        okTimer = setTimeout(() => {
+          const selected = pending[selectedIndex];
+          if (!selected) { okCount = 0; return; }
+          if (okCount === 2) {
+            // double OK -> complete
+            socket.emit('completeOrder', selected.id);
+          } else if (okCount >= 3) {
+            // triple OK -> remove
+            socket.emit('removeOrder', selected.id);
+          }
+          okCount = 0;
+        }, OK_WINDOW_MS);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+
+    // socket updates
+    socket.on('orders', (list) => {
+      ORDERS = Array.isArray(list) ? list : [];
+      render();
+    });
+
+    // initial render (in case)
+    render();
+  </script>
+</body>
+</html>
