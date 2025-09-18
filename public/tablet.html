@@ -5,7 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Tablet — Orders (Left) & Menu (Right)</title>
   <script src="/socket.io/socket.io.js"></script>
+
   <style>
+    :root{
+  /* Mary’s brand */
+  --primary:#95552B;      /* rust orange */
+  --accent:#6B810F;       /* olive green */
+  --bg:#F7F7F5;           /* soft app background */
+  --surface:#FFFFFF;      /* cards/boxes */
+  --muted:#E7E7E3;        /* borders/badges */
+  --text:#222222;         /* main text */
+  --on-primary:#FFFFFF;   /* text on primary */
+  --shadow:0 6px 18px rgba(0,0,0,.06);
+}
+
     :root { color-scheme: light dark; }
     body { font-family: Arial, sans-serif; margin: 16px; }
     .topbar { display:flex; gap:8px; align-items:center; margin: 8px 0 16px; }
@@ -60,6 +73,21 @@
     .chip.selected { background:#2c4cff; border-color:#2c4cff; color:#fff; }
     .help { font-size:12px; opacity:0.85; }
     .label { font-weight:600; margin-bottom:4px; }
+
+    /* === brand overrides (drop-in) === */
+body{ background:var(--bg); color:var(--text); }
+.box{ background:var(--surface); border:1px solid var(--muted); box-shadow:var(--shadow); }
+.badge,.pill{ background:var(--muted); color:var(--text); }
+
+button, .btn{ background:var(--primary); color:var(--on-primary); }
+.btn.secondary{ background:color-mix(in srgb, var(--primary) 15%, var(--muted)); color:var(--text); }
+.btn.danger{ background:#C83C3C; color:#fff; }
+
+.tile{ background:var(--surface); border:1px solid var(--muted); }
+.tile:hover{ outline:3px solid color-mix(in srgb, var(--primary) 18%, transparent); }
+.selected{ outline:3px solid color-mix(in srgb, var(--accent) 28%, transparent); }
+
+h1,h2,h3{ color:color-mix(in srgb, var(--text) 82%, var(--accent)); }
   </style>
 </head>
 <body>

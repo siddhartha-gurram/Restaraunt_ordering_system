@@ -6,6 +6,19 @@
   <title>Kitchen TV — Orders</title>
   <script src="/socket.io/socket.io.js"></script>
   <style>
+:root{
+  /* Mary’s brand */
+  --primary:#95552B;      /* rust orange */
+  --accent:#6B810F;       /* olive green */
+  --bg:#F7F7F5;           /* soft app background */
+  --surface:#FFFFFF;      /* cards/boxes */
+  --muted:#E7E7E3;        /* borders/badges */
+  --text:#222222;         /* main text */
+  --on-primary:#FFFFFF;   /* text on primary */
+  --shadow:0 6px 18px rgba(0,0,0,.06);
+}
+
+
     body { font-family: Arial, sans-serif; margin: 16px; }
     .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .box { border: 1px solid #ddd; padding: 12px; border-radius: 8px; }
@@ -14,6 +27,25 @@
     .badge { padding: 2px 8px; background: #eee; border-radius: 999px; font-size: 12px; }
     .small { font-size: 12px; color: #555; }
     .completed { opacity: 0.6; }
+
+     /* === brand overrides (drop-in) === */
+body{ background:var(--bg); color:var(--text); }
+.box{ background:var(--surface); border:1px solid var(--muted); box-shadow:var(--shadow); }
+.badge,.pill{ background:var(--muted); color:var(--text); }
+
+button, .btn{ background:var(--primary); color:var(--on-primary); }
+.btn.secondary{ background:#DBD1C7; color:var(--text); } /* approx mix */
+
+.btn.danger{ background:#C83C3C; color:#fff; }
+
+.tile{ background:var(--surface); border:1px solid var(--muted); }
+.tile:hover{ outline:3px solid rgba(149,85,43,0.18); } /* #95552B @ 18% */
+
+.selected{ outline:3px solid rgba(107,129,15,0.28); } /* #6B810F @ 28% */
+
+
+h1,h2,h3{ color:color-mix(in srgb, var(--text) 82%, var(--accent)); }
+ 
   </style>
 </head>
 <body>
@@ -121,6 +153,9 @@
 
     // initial render (in case)
     render();
+
+   
+  
   </script>
 </body>
 </html>
